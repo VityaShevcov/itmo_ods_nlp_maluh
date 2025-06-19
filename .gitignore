@@ -26,6 +26,8 @@ wheels/
 MANIFEST
 
 # PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
 
@@ -144,4 +146,15 @@ temp/
 
 # Model artifacts
 embeddings/
-checkpoints/ 
+checkpoints/
+
+# Custom files
+*.log
+.vscode/
+/results/
+/models/
+/data/processed/
+/data_for_analysis.csv
+*.pkl
+*.csv
+/report.pdf 

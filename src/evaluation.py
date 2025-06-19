@@ -21,18 +21,34 @@ class TopicEvaluator:
         if not topics or not texts:
             return 0.0
         
-        # создаем словарь для gensim
-        dictionary = corpora.Dictionary(texts)
-        
-        # создаем модель кохерентности
-        coherence_model = CoherenceModel(
-            topics=topics,
-            texts=texts,
-            dictionary=dictionary,
-            coherence=measure
-        )
-        
-        return coherence_model.get_coherence()
+        try:
+            # создаем словарь для gensim
+            dictionary = corpora.Dictionary(texts)
+            
+            # фильтруем темы - оставляем только слова, которые есть в словаре
+            filtered_topics = []
+            for topic in topics:
+                filtered_words = [word for word in topic if word in dictionary.token2id]
+                if len(filtered_words) >= 2:  # минимум 2 слова для coherence
+                    filtered_topics.append(filtered_words)
+            
+            if not filtered_topics:
+                print(f"Нет валидных тем для расчета coherence ({measure})")
+                return 0.0
+            
+            # создаем модель кохерентности
+            coherence_model = CoherenceModel(
+                topics=filtered_topics,
+                texts=texts,
+                dictionary=dictionary,
+                coherence=measure
+            )
+            
+            return coherence_model.get_coherence()
+            
+        except Exception as e:
+            print(f"Ошибка при расчете coherence ({measure}): {e}")
+            return 0.0
     
     def compute_silhouette(self, 
                           embeddings: np.ndarray, 
@@ -136,21 +152,44 @@ class TopicEvaluator:
         """комплексная оценка модели"""
         results = {'model': model_name}
         
-        # преобразуем темы для coherence
+        # преобразуем темы для coherence - берем только слова, убираем веса
         topic_words = []
         for topic in topics:
-            words = [word for word, _ in topic]
-            topic_words.append(words)
+            if topic:  # проверяем что тема не пустая
+                words = []
+                for word, _ in topic:
+                    if isinstance(word, str):
+                        # Разбиваем фразы на отдельные токены (для BERTopic)
+                        if ' ' in word:
+                            # Это фраза - разбиваем на токены
+                            tokens = word.split()
+                            words.extend(tokens)
+                        else:
+                            # Это отдельный токен
+                            words.append(word)
+                
+                # Убираем дубликаты и пустые строки
+                words = list(dict.fromkeys([w for w in words if w.strip()]))
+                
+                if words:  # добавляем только непустые списки слов
+                    topic_words.append(words)
         
-        # кохерентность
-        try:
-            results['coherence_cv'] = self.compute_coherence(topic_words, texts, 'c_v')
-        except:
+        # кохерентность - только если есть темы и тексты
+        if topic_words and texts:
+            try:
+                results['coherence_cv'] = self.compute_coherence(topic_words, texts, 'c_v')
+            except Exception as e:
+                print(f"Ошибка при расчете coherence_cv для {model_name}: {e}")
+                results['coherence_cv'] = 0.0
+            
+            try:
+                results['coherence_umass'] = self.compute_coherence(topic_words, texts, 'u_mass')
+            except Exception as e:
+                print(f"Ошибка при расчете coherence_umass для {model_name}: {e}")
+                results['coherence_umass'] = 0.0
+        else:
+            print(f"Нет тем или текстов для расчета coherence для {model_name}")
             results['coherence_cv'] = 0.0
-        
-        try:
-            results['coherence_umass'] = self.compute_coherence(topic_words, texts, 'u_mass')
-        except:
             results['coherence_umass'] = 0.0
         
         # силуэт

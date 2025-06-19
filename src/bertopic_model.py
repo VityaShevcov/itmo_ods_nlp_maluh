@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Union
 from bertopic import BERTopic
 from sentence_transformers import SentenceTransformer
 from umap import UMAP
@@ -55,8 +55,9 @@ class BERTopicModel:
     
     def train(self, documents: List[str], 
               min_cluster_size: int = 15,
-              nr_topics: Optional[int] = None,
-              calculate_probabilities: bool = True) -> None:
+              nr_topics: Optional[Union[int, str]] = None,
+              calculate_probabilities: bool = True,
+              embeddings: Optional[np.ndarray] = None) -> None:
         """обучение BERTopic модели"""
         self.documents = documents
         
@@ -78,11 +79,15 @@ class BERTopicModel:
             verbose=True
         )
         
-        # обучаем модель
-        print("создание эмбеддингов...")
-        self.embeddings = self.sentence_model.encode(documents, show_progress_bar=True)
+        # используем готовые эмбеддинги или создаем новые
+        if embeddings is not None:
+            print("📂 Используем готовые эмбеддинги...")
+            self.embeddings = embeddings
+        else:
+            print("🔄 Создание эмбеддингов...")
+            self.embeddings = self.sentence_model.encode(documents, show_progress_bar=True)
         
-        print("обучение BERTopic...")
+        print("🤖 Обучение BERTopic...")
         topics, probabilities = self.model.fit_transform(documents, self.embeddings)
         
         # объединяем похожие темы если нужно
@@ -91,8 +96,8 @@ class BERTopicModel:
         elif nr_topics == "auto":
             self.model.reduce_topics(documents, nr_topics="auto")
         
-        print(f"найдено {len(self.model.get_topic_info())} тем")
-        print(f"количество outliers: {sum(1 for t in topics if t == -1)}")
+        print(f"✅ Найдено {len(self.model.get_topic_info())} тем")
+        print(f"📊 Количество outliers: {sum(1 for t in topics if t == -1)}")
     
     def get_topics(self, num_words: int = 10) -> List[List[Tuple[str, float]]]:
         """получение топ-слов для каждой темы"""
@@ -102,10 +107,20 @@ class BERTopicModel:
         topics = []
         topic_info = self.model.get_topic_info()
         
-        for topic_id in topic_info['Topic']:
-            if topic_id != -1:  # исключаем outliers
-                topic_words = self.model.get_topic(topic_id)[:num_words]
-                topics.append(topic_words)
+        # Сортируем темы по размеру (исключая outliers)
+        valid_topics = topic_info[topic_info['Topic'] != -1].sort_values('Count', ascending=False)
+        
+        for _, row in valid_topics.iterrows():
+            topic_id = row['Topic']
+            try:
+                topic_words = self.model.get_topic(topic_id)
+                if topic_words:  # проверяем что тема не пустая
+                    # Берем только нужное количество слов
+                    topic_words_limited = topic_words[:num_words]
+                    topics.append(topic_words_limited)
+            except Exception as e:
+                print(f"Ошибка при получении темы {topic_id}: {e}")
+                continue
         
         return topics
     
@@ -169,6 +184,15 @@ def tune_bertopic_clustering(documents: List[str],
                             random_state: int = 42) -> pd.DataFrame:
     """подбор оптимального min_cluster_size для BERTopic"""
     
+    # Подготавливаем токенизированные тексты для coherence
+    from src.data_preprocessing import TextPreprocessor
+    preprocessor = TextPreprocessor()
+    processed_texts = []
+    for doc in documents:
+        tokens = preprocessor.preprocess_text(doc)
+        if tokens:  # только непустые документы
+            processed_texts.append(tokens)
+    
     results = []
     
     for min_cluster_size in min_cluster_sizes:
@@ -188,8 +212,9 @@ def tune_bertopic_clustering(documents: List[str],
         
         # собираем метрики
         topic_info = bertopic.get_topic_info()
-        num_topics = len(topic_info) - 1  # исключаем outliers (-1)
+        num_topics = len(topic_info) - 1 if -1 in topic_info['Topic'].values else len(topic_info)
         num_outliers = topic_info[topic_info['Topic'] == -1]['Count'].sum() if -1 in topic_info['Topic'].values else 0
+        total_docs = len(documents)
         
         # средний размер темы
         if num_topics > 0:
@@ -202,15 +227,41 @@ def tune_bertopic_clustering(documents: List[str],
             min_topic_size = 0
             max_topic_size = 0
         
+        # расчет coherence_cv
+        coherence_cv = 0.0
+        try:
+            topics = bertopic.get_topics()
+            if topics and processed_texts:
+                from src.evaluation import TopicEvaluator
+                evaluator = TopicEvaluator()
+                topic_words = []
+                for topic in topics:
+                    words = [word for word, _ in topic if isinstance(word, str)]
+                    if words:
+                        topic_words.append(words)
+                
+                if topic_words:
+                    coherence_cv = evaluator.compute_coherence(topic_words, processed_texts, 'c_v')
+        except Exception as e:
+            print(f"Ошибка при расчете coherence для min_cluster_size={min_cluster_size}: {e}")
+            coherence_cv = 0.0
+        
         results.append({
             'min_cluster_size': min_cluster_size,
             'num_topics': num_topics,
-            'num_outliers': num_outliers,
-            'outlier_ratio': num_outliers / len(documents),
+            'outlier_ratio': num_outliers / total_docs,
+            'coverage': (total_docs - num_outliers) / total_docs,
             'avg_topic_size': avg_topic_size,
             'min_topic_size': min_topic_size,
-            'max_topic_size': max_topic_size
+            'max_topic_size': max_topic_size,
+            'coherence_cv': coherence_cv,
+            'total_docs': total_docs,
+            'outliers': num_outliers
         })
+        
+        print(f"  найдено тем: {num_topics}")
+        print(f"  outliers: {num_outliers} ({num_outliers/total_docs:.1%})")
+        print(f"  coherence_cv: {coherence_cv:.3f}")
     
     return pd.DataFrame(results)
 
