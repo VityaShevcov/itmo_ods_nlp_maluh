@@ -1,0 +1,10 @@
+include README.md
+include LICENSE
+include requirements.txt
+include MANIFEST.in
+recursive-include src *.py
+recursive-include notebooks *.ipynb
+recursive-include report *.md *.csv
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]
+exclude .gitignore 
